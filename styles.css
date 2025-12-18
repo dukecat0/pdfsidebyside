@@ -1,0 +1,223 @@
+:root{
+  --bg: #0b0d12;
+  --panel2: #0f1420;
+  --text: #e6e9f2;
+  --muted: #9aa3b2;
+  --border: rgba(255,255,255,.12);
+  --accent: #7aa2ff;
+  --btn: rgba(255,255,255,.10);
+  --btn2: rgba(255,255,255,.16);
+}
+
+*{ box-sizing: border-box; }
+html,body{ height: 100%; }
+body{
+  margin:0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+  background: radial-gradient(1000px 500px at 30% -10%, rgba(122,162,255,.25), transparent 60%),
+              radial-gradient(900px 600px at 90% 0%, rgba(122,255,205,.14), transparent 55%),
+              var(--bg);
+  color: var(--text);
+  display:flex;
+  flex-direction:column;
+}
+
+.topbar{
+  display:flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(10, 12, 18, .65);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top:0;
+  z-index:10;
+}
+
+.title{
+  margin:0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: .2px;
+}
+
+.topbar__left{
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+}
+
+.filepickers{
+  display:flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.filebtn{
+  display:inline-flex;
+  align-items:center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.06);
+  border-radius: 10px;
+  cursor:pointer;
+  user-select:none;
+  font-size: 12px;
+  color: var(--text);
+}
+.filebtn input{ display:none; }
+
+.controls{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn{
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--btn);
+  color: var(--text);
+  font-size: 12px;
+  cursor:pointer;
+}
+.btn:hover{ background: var(--btn2); }
+.btn:disabled{ opacity:.5; cursor:not-allowed; }
+
+.divider{
+  width: 1px;
+  height:  24px;
+  background: var(--border);
+}
+
+.pager{
+  display:flex;
+  align-items:center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.06);
+  border-radius: 10px;
+  font-size: 12px;
+}
+.pager__label, .pager__sep, .pager__count{ color: var(--muted); }
+.pager__input{
+  width: 70px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,.2);
+  color: var(--text);
+}
+.pager__input:disabled{ opacity:.6; }
+
+.zoom{
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 52px;
+  text-align:center;
+}
+
+.toggle{
+  display:flex;
+  gap: 8px;
+  align-items:center;
+  font-size: 12px;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.06);
+  user-select:none;
+}
+.toggle input{ accent-color: var(--accent); }
+
+.main{
+  flex:1;
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  min-height: 0;
+}
+@media (max-width: 980px){
+  .main{ grid-template-columns: 1fr; }
+}
+
+.panel{
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow:hidden;
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+  display:flex;
+  flex-direction:column;
+  min-height: 0;
+}
+
+.panel__header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,.18);
+}
+
+.panel__title{
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+
+.status{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* IMPORTANT: no hidden content -> no internal scrolling */
+.viewer{
+  flex:1;
+  min-height: 0;
+  overflow: hidden;          /* prevents clipping via scroll; we render to fit instead */
+  padding: 12px;
+  background: var(--panel2);
+}
+
+/* Double-buffered canvas stack */
+.canvasStack{
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height: 1px; /* will be set by JS on fit */
+}
+
+.canvasStack canvas{
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display:block;
+  background: #0b0d12;
+  border-radius: 10px;
+  box-shadow: 0 12px 50px rgba(0,0,0,.45);
+
+  /* Ensure the drawn bitmap is shown at its intended size */
+  image-rendering: auto;
+}
+
+.canvasStack canvas.isBack{ visibility: hidden; }
+.canvasStack canvas.isFront{ visibility: visible; }
+
+.footer{
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}

@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Synced Dual PDF Slides</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__left">
+      <h1 class="title">Synced Dual PDF Slides</h1>
+      <div class="filepickers">
+        <label class="filebtn">
+          <input id="fileLeft" type="file" accept="application/pdf" />
+          Load Left PDF (ZH)
+        </label>
+        <label class="filebtn">
+          <input id="fileRight" type="file" accept="application/pdf" />
+          Load Right PDF (EN)
+        </label>
+      </div>
+    </div>
+
+    <div class="topbar__right">
+      <div class="controls">
+        <button id="prevBtn" class="btn" disabled>Prev</button>
+        <div class="pager">
+          <span class="pager__label">Page</span>
+          <input id="pageInput" class="pager__input" type="number" min="1" value="1" disabled />
+          <span class="pager__sep">/</span>
+          <span id="pageCount" class="pager__count">—</span>
+        </div>
+        <button id="nextBtn" class="btn" disabled>Next</button>
+
+        <div class="divider"></div>
+
+        <button id="zoomOutBtn" class="btn" disabled>-</button>
+        <span id="zoomLabel" class="zoom">100%</span>
+        <button id="zoomInBtn" class="btn" disabled>+</button>
+
+        <div class="divider"></div>
+
+        <label class="toggle">
+          <input id="syncToggle" type="checkbox" checked />
+          <span>Sync</span>
+        </label>
+
+        <label class="toggle">
+          <input id="fitToggle" type="checkbox" checked />
+          <span>Fit to panel</span>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="panel">
+      <div class="panel__header">
+        <div class="panel__title">Left (ZH)</div>
+        <div id="leftStatus" class="status">No PDF loaded</div>
+      </div>
+      <div class="viewer" id="leftViewer">
+        <div class="canvasStack" id="leftStack">
+          <canvas id="leftCanvasA"></canvas>
+          <canvas id="leftCanvasB"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__header">
+        <div class="panel__title">Right (EN)</div>
+        <div id="rightStatus" class="status">No PDF loaded</div>
+      </div>
+      <div class="viewer" id="rightViewer">
+        <div class="canvasStack" id="rightStack">
+          <canvas id="rightCanvasA"></canvas>
+          <canvas id="rightCanvasB"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="hint">
+      Mouse wheel: smooth paging (trackpad-friendly). Arrow keys (←/→) page. Ctrl/⌘ +/- zoom (when Fit off).
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@2.16.105/build/pdf.min.js"></script>
+  <script>
+    const pdfjsLib = window.pdfjsLib;
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@2.16.105/build/pdf.worker.min.js";
+
+    (function () {
+      const els = {
+        fileLeft: document.getElementById("fileLeft"),
+        fileRight: document.getElementById("fileRight"),
+
+        leftA: document.getElementById("leftCanvasA"),
+        leftB: document.getElementById("leftCanvasB"),
+        rightA: document.getElementById("rightCanvasA"),
+        rightB: document.getElementById("rightCanvasB"),
+
+        leftStack: document.getElementById("leftStack"),
+        rightStack: document.getElementById("rightStack"),
+
+        leftViewer: document.getElementById("leftViewer"),
+        rightViewer: document.getElementById("rightViewer"),
+
+        leftStatus: document.getElementById("leftStatus"),
+        rightStatus: document.getElementById("rightStatus"),
+
+        prevBtn: document.getElementById("prevBtn"),
+        nextBtn: document.getElementById("nextBtn"),
+        pageInput: document.getElementById("pageInput"),
+        pageCount: document.getElementById("pageCount"),
+
+        zoomOutBtn: document.getElementById("zoomOutBtn"),
+        zoomInBtn: document.getElementById("zoomInBtn"),
+        zoomLabel: document.getElementById("zoomLabel"),
+
+        syncToggle: document.getElementById("syncToggle"),
+        fitToggle: document.getElementById("fitToggle"),
+      };
+
+      const state = {
+        left: { pdf: null, pages: 0, busy: false, pending: null, front: "A" },
+        right:{ pdf: null, pages: 0, busy: false, pending: null, front: "A" },
+        page: 1,
+        zoom: 1.0,
+        wheel: {
+          // accumulate "lines" (not pixels) so small trackpad deltas still flip pages quickly
+          accumLines: 0,
+          lastTs: 0,
+          // tune these:
+          thresholdLines: 6,      // lower = more sensitive
+          maxPagesPerGesture: 3,  // prevent huge jumps on fast wheels
+          idleResetMs: 180
+        }
+      };
+
+      const DPR = () => Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      function bothLoaded() { return !!(state.left.pdf && state.right.pdf); }
+      function anyLoaded()  { return !!(state.left.pdf || state.right.pdf); }
+
+      function maxCommonPages() {
+        if (!state.left.pdf && !state.right.pdf) return 0;
+        if (state.left.pdf && state.right.pdf) return Math.min(state.left.pages, state.right.pages);
+        return state.left.pdf ? state.left.pages : state.right.pages;
+      }
+
+      function clampPage(p) {
+        const maxP = maxCommonPages();
+        if (!maxP) return 1;
+        return Math.max(1, Math.min(maxP, p));
+      }
+
+      function setControlsEnabled(enabled) {
+        els.prevBtn.disabled = !enabled;
+        els.nextBtn.disabled = !enabled;
+        els.pageInput.disabled = !enabled;
+        const zoomEnabled = enabled && !els.fitToggle.checked;
+        els.zoomOutBtn.disabled = !zoomEnabled;
+        els.zoomInBtn.disabled = !zoomEnabled;
+      }
+
+      function updatePagerUI() {
+        const maxP = maxCommonPages();
+        els.pageCount.textContent = maxP ? String(maxP) : "—";
+        els.pageInput.value = String(state.page);
+        els.prevBtn.disabled = !anyLoaded() || state.page <= 1;
+        els.nextBtn.disabled = !anyLoaded() || (maxP ? state.page >= maxP : true);
+        els.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+      }
+
+      function status(side, text) {
+        (side === "left" ? els.leftStatus : els.rightStatus).textContent = text;
+      }
+
+      async function loadPdfFromFile(file) {
+        const buf = await file.arrayBuffer();
+        const task = pdfjsLib.getDocument({ data: buf });
+        return await task.promise;
+      }
+
+      function setCanvasSize(canvas, viewport) {
+        const dpr = DPR();
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        const ctx = canvas.getContext("2d", { alpha: false });
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return ctx;
+      }
+
+      function getCanvases(side) {
+        if (side === "left") return { A: els.leftA, B: els.leftB, stack: els.leftStack, viewer: els.leftViewer };
+        return { A: els.rightA, B: els.rightB, stack: els.rightStack, viewer: els.rightViewer };
+      }
+
+      function setFront(side, which) {
+        const { A, B } = getCanvases(side);
+        if (which === "A") {
+          A.classList.add("isFront"); A.classList.remove("isBack");
+          B.classList.add("isBack");  B.classList.remove("isFront");
+        } else {
+          B.classList.add("isFront"); B.classList.remove("isBack");
+          A.classList.add("isBack");  A.classList.remove("isFront");
+        }
+        state[side].front = which;
+      }
+
+      function backCanvas(side) {
+        const { A, B } = getCanvases(side);
+        return state[side].front === "A" ? B : A;
+      }
+
+      function computeFitScale(pageViewportAt1, viewerEl, stackEl) {
+        const availW = Math.max(1, viewerEl.clientWidth);
+        const availH = Math.max(1, viewerEl.clientHeight);
+        const scale = Math.min(availW / pageViewportAt1.width, availH / pageViewportAt1.height);
+        const renderedH = pageViewportAt1.height * scale;
+        stackEl.style.minHeight = `${Math.ceil(renderedH)}px`;
+        return scale;
+      }
+
+      async function renderSide(side, pageNum) {
+        const s = state[side];
+        if (!s.pdf) return;
+
+        if (s.busy) { s.pending = { pageNum }; return; }
+        s.busy = true;
+
+        try {
+          const page = await s.pdf.getPage(pageNum);
+
+          let scale;
+          if (els.fitToggle.checked) {
+            const vp1 = page.getViewport({ scale: 1 });
+            const { viewer, stack } = getCanvases(side);
+            scale = computeFitScale(vp1, viewer, stack);
+          } else {
+            scale = state.zoom;
+          }
+
+          const viewport = page.getViewport({ scale });
+          const back = backCanvas(side);
+          const ctx = setCanvasSize(back, viewport);
+
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          getCanvases(side).stack.classList.add("hasRendered");
+          const nextFront = (s.front === "A") ? "B" : "A";
+          requestAnimationFrame(() => setFront(side, nextFront));
+        } finally {
+          s.busy = false;
+          if (s.pending) {
+            const { pageNum: p } = s.pending;
+            s.pending = null;
+            renderSide(side, p);
+          }
+        }
+      }
+
+      async function renderAll() {
+        const p = state.page;
+        await Promise.allSettled([
+          state.left.pdf ? renderSide("left", p) : Promise.resolve(),
+          state.right.pdf ? renderSide("right", p) : Promise.resolve(),
+        ]);
+      }
+
+      function setPage(newPage) {
+        state.page = clampPage(newPage);
+        updatePagerUI();
+        renderAll();
+      }
+
+      function setZoom(newZoom) {
+        state.zoom = Math.max(0.25, Math.min(4.0, newZoom));
+        updatePagerUI();
+        renderAll();
+      }
+
+      async function onPick(side, file) {
+        if (!file) return;
+        status(side, "Loading…");
+
+        try {
+          const pdf = await loadPdfFromFile(file);
+          state[side].pdf = pdf;
+          state[side].pages = pdf.numPages;
+          status(side, `${file.name} • ${pdf.numPages} pages`);
+          setFront(side, state[side].front);
+        } catch (e) {
+          console.error(e);
+          state[side].pdf = null;
+          state[side].pages = 0;
+          status(side, "Failed to load PDF");
+        }
+
+        setControlsEnabled(anyLoaded());
+        state.page = clampPage(state.page);
+        updatePagerUI();
+        renderAll();
+      }
+
+      // --- Better wheel paging (sensitive + trackpad-friendly) ---
+      function deltaToLines(ev) {
+        // Normalize wheel delta to "line units"
+        // deltaMode: 0=pixels, 1=lines, 2=pages
+        if (ev.deltaMode === 1) return ev.deltaY;
+        if (ev.deltaMode === 2) return ev.deltaY * 30; // treat a "page" as ~30 lines
+        // pixels -> lines approximation (16px per line)
+        return ev.deltaY / 12;
+      }
+
+      function wheelToPages(ev) {
+        const now = performance.now();
+        if (now - state.wheel.lastTs > state.wheel.idleResetMs) state.wheel.accumLines = 0;
+        state.wheel.lastTs = now;
+
+        const lines = deltaToLines(ev);
+        state.wheel.accumLines += lines;
+
+        const thr = state.wheel.thresholdLines;
+        let steps = 0;
+
+        // Consume multiple thresholds if user scrolls quickly
+        while (Math.abs(state.wheel.accumLines) >= thr) {
+          steps += state.wheel.accumLines > 0 ? 1 : -1;
+          state.wheel.accumLines += state.wheel.accumLines > 0 ? -thr : thr;
+          if (Math.abs(steps) >= state.wheel.maxPagesPerGesture) break;
+        }
+
+        return steps; // positive => next page, negative => prev page
+      }
+
+      async function wheelIndependent(side, ev) {
+        if (!anyLoaded()) return;
+        if (ev.ctrlKey || ev.metaKey) return;
+
+        const steps = wheelToPages(ev);
+        if (steps === 0) return;
+
+        ev.preventDefault();
+
+        if (els.syncToggle.checked) {
+          setPage(state.page + steps);
+          return;
+        }
+
+        const s = state[side];
+        if (!s.pdf) return;
+
+        const next = Math.max(1, Math.min(s.pages, state.page + steps));
+        state.page = next;
+        updatePagerUI();
+        await renderSide(side, next);
+      }
+
+      // Events
+      els.fileLeft.addEventListener("change", (e) => onPick("left", e.target.files && e.target.files[0]));
+      els.fileRight.addEventListener("change", (e) => onPick("right", e.target.files && e.target.files[0]));
+
+      els.prevBtn.addEventListener("click", () => setPage(state.page - 1));
+      els.nextBtn.addEventListener("click", () => setPage(state.page + 1));
+
+      els.pageInput.addEventListener("change", () => setPage(parseInt(els.pageInput.value || "1", 10)));
+      els.pageInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") setPage(parseInt(els.pageInput.value || "1", 10));
+      });
+
+      els.zoomOutBtn.addEventListener("click", () => setZoom(state.zoom / 1.1));
+      els.zoomInBtn.addEventListener("click", () => setZoom(state.zoom * 1.1));
+
+      els.leftViewer.addEventListener("wheel", (ev) => wheelIndependent("left", ev), { passive: false });
+      els.rightViewer.addEventListener("wheel", (ev) => wheelIndependent("right", ev), { passive: false });
+
+      window.addEventListener("keydown", (e) => {
+        if (!anyLoaded()) return;
+
+        if (e.key === "ArrowLeft") { e.preventDefault(); setPage(state.page - 1); }
+        if (e.key === "ArrowRight") { e.preventDefault(); setPage(state.page + 1); }
+
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (!els.fitToggle.checked) {
+          if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); setZoom(state.zoom * 1.1); }
+          if (ctrl && (e.key === "-" || e.key === "_")) { e.preventDefault(); setZoom(state.zoom / 1.1); }
+          if (ctrl && (e.key === "0")) { e.preventDefault(); setZoom(1.0); }
+        }
+      });
+
+      els.syncToggle.addEventListener("change", () => {
+        if (els.syncToggle.checked && bothLoaded()) state.page = clampPage(state.page);
+        updatePagerUI();
+        renderAll();
+      });
+
+      els.fitToggle.addEventListener("change", () => {
+        setControlsEnabled(anyLoaded());
+        renderAll();
+      });
+
+      let resizeTimer = null;
+      window.addEventListener("resize", () => {
+        if (!els.fitToggle.checked) return;
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => renderAll(), 80);
+      });
+
+      setFront("left", "A");
+      setFront("right", "A");
+      setControlsEnabled(false);
+      updatePagerUI();
+    })();
+  </script>
+</body>
+</html>
