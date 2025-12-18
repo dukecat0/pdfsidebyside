@@ -34,6 +34,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
     right:{ pdf: null, pages: 0, rendering: false, pending: null },
     page: 1,
     zoom: 1.0,
+    activeSide: "left",
   };
 
   const DPR = () => Math.max(1, Math.min(3, window.devicePixelRatio || 1));
@@ -189,6 +190,26 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
     await renderSide(side, next, state.zoom);
   }
 
+  function setActiveSide(side) {
+    state.activeSide = side;
+  }
+
+  async function pageByKeyboard(delta) {
+    if (els.syncToggle.checked) {
+      setPage(state.page + delta);
+      return;
+    }
+
+    const side = state.activeSide || "left";
+    const s = state[side];
+    if (!s || !s.pdf) return;
+
+    const next = Math.max(1, Math.min(s.pages, state.page + delta));
+    state.page = next;
+    updatePagerUI();
+    await renderSide(side, next, state.zoom);
+  }
+
   // Events
   els.fileLeft.addEventListener("change", (e) => onPick("left", e.target.files?.[0]));
   els.fileRight.addEventListener("change", (e) => onPick("right", e.target.files?.[0]));
@@ -207,11 +228,16 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   els.leftViewer.addEventListener("wheel", (ev) => wheelIndependent("left", ev), { passive: false });
   els.rightViewer.addEventListener("wheel", (ev) => wheelIndependent("right", ev), { passive: false });
 
+  ["pointerdown", "mouseenter", "focusin"].forEach((evt) => {
+    els.leftViewer.addEventListener(evt, () => setActiveSide("left"));
+    els.rightViewer.addEventListener(evt, () => setActiveSide("right"));
+  });
+
   window.addEventListener("keydown", (e) => {
     if (!anyLoaded()) return;
 
-    if (e.key === "ArrowLeft") { e.preventDefault(); setPage(state.page - 1); }
-    if (e.key === "ArrowRight") { e.preventDefault(); setPage(state.page + 1); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); pageByKeyboard(-1); }
+    if (e.key === "ArrowRight") { e.preventDefault(); pageByKeyboard(1); }
 
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); setZoom(state.zoom * 1.1); }
