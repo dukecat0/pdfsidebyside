@@ -25,11 +25,26 @@
     <div class="topbar__right">
       <div class="controls">
         <button id="prevBtn" class="btn" disabled>Prev</button>
-        <div class="pager">
+        <div class="pager" id="pagerSync">
           <span class="pager__label">Page</span>
           <input id="pageInput" class="pager__input" type="number" min="1" value="1" disabled />
           <span class="pager__sep">/</span>
           <span id="pageCount" class="pager__count">—</span>
+        </div>
+
+        <div class="pagerGroup" id="pagerDual" hidden>
+          <div class="pager">
+            <span class="pager__label">L</span>
+            <input id="pageLeftInput" class="pager__input" type="number" min="1" value="1" disabled />
+            <span class="pager__sep">/</span>
+            <span id="pageLeftCount" class="pager__count">—</span>
+          </div>
+          <div class="pager">
+            <span class="pager__label">R</span>
+            <input id="pageRightInput" class="pager__input" type="number" min="1" value="1" disabled />
+            <span class="pager__sep">/</span>
+            <span id="pageRightCount" class="pager__count">—</span>
+          </div>
         </div>
         <button id="nextBtn" class="btn" disabled>Next</button>
 
@@ -115,8 +130,14 @@
 
         prevBtn: document.getElementById("prevBtn"),
         nextBtn: document.getElementById("nextBtn"),
+        pagerSync: document.getElementById("pagerSync"),
+        pagerDual: document.getElementById("pagerDual"),
         pageInput: document.getElementById("pageInput"),
         pageCount: document.getElementById("pageCount"),
+        pageLeftInput: document.getElementById("pageLeftInput"),
+        pageRightInput: document.getElementById("pageRightInput"),
+        pageLeftCount: document.getElementById("pageLeftCount"),
+        pageRightCount: document.getElementById("pageRightCount"),
 
         zoomOutBtn: document.getElementById("zoomOutBtn"),
         zoomInBtn: document.getElementById("zoomInBtn"),
@@ -130,6 +151,8 @@
         left: { pdf: null, pages: 0, busy: false, pending: null, front: "A" },
         right:{ pdf: null, pages: 0, busy: false, pending: null, front: "A" },
         page: 1,
+        leftPage: 1,
+        rightPage: 1,
         zoom: 1.0,
         activeSide: "left",
         wheel: {
@@ -153,27 +176,69 @@
         return state.left.pdf ? state.left.pages : state.right.pages;
       }
 
-      function clampPage(p) {
+      function clampCommonPage(p) {
         const maxP = maxCommonPages();
         if (!maxP) return 1;
         return Math.max(1, Math.min(maxP, p));
+      }
+
+      function maxSidePages(side) {
+        const s = state[side];
+        return s && s.pdf ? s.pages : 0;
+      }
+
+      function clampSidePage(side, p) {
+        const maxP = maxSidePages(side);
+        if (!maxP) return 1;
+        return Math.max(1, Math.min(maxP, p));
+      }
+
+      function getSidePage(side) {
+        return side === "left" ? state.leftPage : state.rightPage;
+      }
+
+      function setActiveSide(side) {
+        state.activeSide = side;
       }
 
       function setControlsEnabled(enabled) {
         els.prevBtn.disabled = !enabled;
         els.nextBtn.disabled = !enabled;
         els.pageInput.disabled = !enabled;
+        els.pageLeftInput.disabled = !enabled;
+        els.pageRightInput.disabled = !enabled;
         const zoomEnabled = enabled && !els.fitToggle.checked;
         els.zoomOutBtn.disabled = !zoomEnabled;
         els.zoomInBtn.disabled = !zoomEnabled;
       }
 
       function updatePagerUI() {
-        const maxP = maxCommonPages();
-        els.pageCount.textContent = maxP ? String(maxP) : "—";
-        els.pageInput.value = String(state.page);
-        els.prevBtn.disabled = !anyLoaded() || state.page <= 1;
-        els.nextBtn.disabled = !anyLoaded() || (maxP ? state.page >= maxP : true);
+        const syncOn = els.syncToggle.checked;
+
+        els.pagerSync.hidden = !syncOn;
+        els.pagerDual.hidden = syncOn;
+
+        if (syncOn) {
+          const maxP = maxCommonPages();
+          els.pageCount.textContent = maxP ? String(maxP) : "—";
+          els.pageInput.value = String(state.page);
+          els.prevBtn.disabled = !anyLoaded() || state.page <= 1;
+          els.nextBtn.disabled = !anyLoaded() || (maxP ? state.page >= maxP : true);
+        } else {
+          const lMax = maxSidePages("left");
+          const rMax = maxSidePages("right");
+          els.pageLeftCount.textContent = lMax ? String(lMax) : "—";
+          els.pageRightCount.textContent = rMax ? String(rMax) : "—";
+          els.pageLeftInput.value = String(state.leftPage);
+          els.pageRightInput.value = String(state.rightPage);
+
+          const side = state.activeSide || "left";
+          const p = getSidePage(side);
+          const maxP = maxSidePages(side);
+          els.prevBtn.disabled = !anyLoaded() || p <= 1;
+          els.nextBtn.disabled = !anyLoaded() || (maxP ? p >= maxP : true);
+        }
+
         els.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
       }
 
@@ -268,17 +333,39 @@
       }
 
       async function renderAll() {
-        const p = state.page;
+        const syncOn = els.syncToggle.checked;
+        const lPage = syncOn ? state.page : state.leftPage;
+        const rPage = syncOn ? state.page : state.rightPage;
         await Promise.allSettled([
-          state.left.pdf ? renderSide("left", p) : Promise.resolve(),
-          state.right.pdf ? renderSide("right", p) : Promise.resolve(),
+          state.left.pdf ? renderSide("left", lPage) : Promise.resolve(),
+          state.right.pdf ? renderSide("right", rPage) : Promise.resolve(),
         ]);
       }
 
-      function setPage(newPage) {
-        state.page = clampPage(newPage);
+      function setSyncPage(newPage) {
+        state.page = clampCommonPage(newPage);
+        state.leftPage = state.page;
+        state.rightPage = state.page;
         updatePagerUI();
         renderAll();
+      }
+
+      async function setSidePage(side, newPage) {
+        const next = clampSidePage(side, newPage);
+        if (side === "left") state.leftPage = next;
+        else state.rightPage = next;
+        updatePagerUI();
+        await renderSide(side, next);
+      }
+
+      function pageByDelta(delta) {
+        if (els.syncToggle.checked) {
+          setSyncPage(state.page + delta);
+          return;
+        }
+
+        const side = state.activeSide || "left";
+        setSidePage(side, getSidePage(side) + delta);
       }
 
       function setZoom(newZoom) {
@@ -305,7 +392,16 @@
         }
 
         setControlsEnabled(anyLoaded());
-        state.page = clampPage(state.page);
+
+        if (els.syncToggle.checked) {
+          state.page = clampCommonPage(state.page);
+          state.leftPage = state.page;
+          state.rightPage = state.page;
+        } else {
+          state.leftPage = clampSidePage("left", state.leftPage);
+          state.rightPage = clampSidePage("right", state.rightPage);
+        }
+
         updatePagerUI();
         renderAll();
       }
@@ -350,36 +446,19 @@
 
         ev.preventDefault();
 
+        setActiveSide(side);
+
         if (els.syncToggle.checked) {
-          setPage(state.page + steps);
+          setSyncPage(state.page + steps);
           return;
         }
 
         const s = state[side];
         if (!s.pdf) return;
 
-        const next = Math.max(1, Math.min(s.pages, state.page + steps));
-        state.page = next;
-        updatePagerUI();
-        await renderSide(side, next);
-      }
-
-      function setActiveSide(side) {
-        state.activeSide = side;
-      }
-
-      async function pageByKeyboard(delta) {
-        if (els.syncToggle.checked) {
-          setPage(state.page + delta);
-          return;
-        }
-
-        const side = state.activeSide || "left";
-        const s = state[side];
-        if (!s || !s.pdf) return;
-
-        const next = Math.max(1, Math.min(s.pages, state.page + delta));
-        state.page = next;
+        const next = clampSidePage(side, getSidePage(side) + steps);
+        if (side === "left") state.leftPage = next;
+        else state.rightPage = next;
         updatePagerUI();
         await renderSide(side, next);
       }
@@ -388,12 +467,22 @@
       els.fileLeft.addEventListener("change", (e) => onPick("left", e.target.files && e.target.files[0]));
       els.fileRight.addEventListener("change", (e) => onPick("right", e.target.files && e.target.files[0]));
 
-      els.prevBtn.addEventListener("click", () => setPage(state.page - 1));
-      els.nextBtn.addEventListener("click", () => setPage(state.page + 1));
+      els.prevBtn.addEventListener("click", () => pageByDelta(-1));
+      els.nextBtn.addEventListener("click", () => pageByDelta(1));
 
-      els.pageInput.addEventListener("change", () => setPage(parseInt(els.pageInput.value || "1", 10)));
+      els.pageInput.addEventListener("change", () => setSyncPage(parseInt(els.pageInput.value || "1", 10)));
       els.pageInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") setPage(parseInt(els.pageInput.value || "1", 10));
+        if (e.key === "Enter") setSyncPage(parseInt(els.pageInput.value || "1", 10));
+      });
+
+      els.pageLeftInput.addEventListener("change", () => setSidePage("left", parseInt(els.pageLeftInput.value || "1", 10)));
+      els.pageLeftInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") setSidePage("left", parseInt(els.pageLeftInput.value || "1", 10));
+      });
+
+      els.pageRightInput.addEventListener("change", () => setSidePage("right", parseInt(els.pageRightInput.value || "1", 10)));
+      els.pageRightInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") setSidePage("right", parseInt(els.pageRightInput.value || "1", 10));
       });
 
       els.zoomOutBtn.addEventListener("click", () => setZoom(state.zoom / 1.1));
@@ -408,11 +497,14 @@
         els.rightViewer.addEventListener(evt, () => setActiveSide("right"));
       });
 
+      els.pageLeftInput.addEventListener("focus", () => setActiveSide("left"));
+      els.pageRightInput.addEventListener("focus", () => setActiveSide("right"));
+
       window.addEventListener("keydown", (e) => {
         if (!anyLoaded()) return;
 
-        if (e.key === "ArrowLeft") { e.preventDefault(); pageByKeyboard(-1); }
-        if (e.key === "ArrowRight") { e.preventDefault(); pageByKeyboard(1); }
+        if (e.key === "ArrowLeft") { e.preventDefault(); pageByDelta(-1); }
+        if (e.key === "ArrowRight") { e.preventDefault(); pageByDelta(1); }
 
         const ctrl = e.ctrlKey || e.metaKey;
         if (!els.fitToggle.checked) {
@@ -423,7 +515,13 @@
       });
 
       els.syncToggle.addEventListener("change", () => {
-        if (els.syncToggle.checked && bothLoaded()) state.page = clampPage(state.page);
+        if (els.syncToggle.checked) {
+          // Choose the active side's current page as the sync target.
+          const target = clampCommonPage(getSidePage(state.activeSide || "left"));
+          state.page = target;
+          state.leftPage = target;
+          state.rightPage = target;
+        }
         updatePagerUI();
         renderAll();
       });

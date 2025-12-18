@@ -10,6 +10,11 @@
 }
 
 *{ box-sizing: border-box; }
+
+[hidden]{
+  display: none !important;
+}
+
 html,body{ height: 100%; }
 body{
   margin:0;
@@ -103,6 +108,12 @@ body{
   background: rgba(255,255,255,.06);
   border-radius: 10px;
   font-size: 12px;
+}
+
+.pagerGroup{
+  display:flex;
+  align-items:center;
+  gap: 10px;
 }
 .pager__label, .pager__sep, .pager__count{ color: var(--muted); }
 .pager__input{
