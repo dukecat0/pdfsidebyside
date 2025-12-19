@@ -79,6 +79,7 @@
         <div class="canvasStack" id="leftStack">
           <canvas id="leftCanvasA"></canvas>
           <canvas id="leftCanvasB"></canvas>
+          <div class="textLayer" id="leftTextLayer" aria-hidden="true"></div>
         </div>
       </div>
     </section>
@@ -92,6 +93,7 @@
         <div class="canvasStack" id="rightStack">
           <canvas id="rightCanvasA"></canvas>
           <canvas id="rightCanvasB"></canvas>
+          <div class="textLayer" id="rightTextLayer" aria-hidden="true"></div>
         </div>
       </div>
     </section>
@@ -104,8 +106,10 @@
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@2.16.105/build/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@2.16.105/web/pdf_viewer.min.js"></script>
   <script>
     const pdfjsLib = window.pdfjsLib;
+    const pdfjsViewer = window.pdfjsViewer;
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@2.16.105/build/pdf.worker.min.js";
 
@@ -121,6 +125,9 @@
 
         leftStack: document.getElementById("leftStack"),
         rightStack: document.getElementById("rightStack"),
+
+        leftTextLayer: document.getElementById("leftTextLayer"),
+        rightTextLayer: document.getElementById("rightTextLayer"),
 
         leftViewer: document.getElementById("leftViewer"),
         rightViewer: document.getElementById("rightViewer"),
@@ -268,6 +275,48 @@
         return { A: els.rightA, B: els.rightB, stack: els.rightStack, viewer: els.rightViewer };
       }
 
+      function getTextLayer(side) {
+        return side === "left" ? els.leftTextLayer : els.rightTextLayer;
+      }
+
+      async function renderTextLayer(side, page, viewport) {
+        const layer = getTextLayer(side);
+        if (!layer) return;
+
+        // Size and position must match the canvas CSS size.
+        layer.style.width = `${viewport.width}px`;
+        layer.style.height = `${viewport.height}px`;
+
+        // Clear previous content (previous page).
+        layer.textContent = "";
+
+        // PDF.js provides a text layer renderer either on pdfjsLib (core) or pdfjsViewer (viewer bundle).
+        const textContent = await page.getTextContent();
+        const textDivs = [];
+        const renderFn = (pdfjsLib && typeof pdfjsLib.renderTextLayer === "function")
+          ? pdfjsLib.renderTextLayer
+          : (pdfjsViewer && typeof pdfjsViewer.renderTextLayer === "function")
+            ? pdfjsViewer.renderTextLayer
+            : null;
+
+        if (!renderFn) {
+          throw new Error("PDF.js text layer renderer not available");
+        }
+
+        const task = renderFn({
+          textContent,
+          container: layer,
+          viewport,
+          textDivs,
+          enhanceTextSelection: true,
+        });
+
+        // pdfjs versions differ: sometimes renderTextLayer returns a renderTask with .promise
+        // and sometimes a Promise directly.
+        if (task && task.promise) await task.promise;
+        else await task;
+      }
+
       function setFront(side, which) {
         const { A, B } = getCanvases(side);
         if (which === "A") {
@@ -321,7 +370,18 @@
 
           getCanvases(side).stack.classList.add("hasRendered");
           const nextFront = (s.front === "A") ? "B" : "A";
-          requestAnimationFrame(() => setFront(side, nextFront));
+          requestAnimationFrame(async () => {
+            setFront(side, nextFront);
+            try {
+              await renderTextLayer(side, page, viewport);
+            } catch (e) {
+              // If the text layer fails (e.g., scanned PDFs or unexpected API),
+              // keep the canvas render working.
+              console.warn("Text layer render failed:", e);
+              const layer = getTextLayer(side);
+              if (layer) layer.textContent = "";
+            }
+          });
         } finally {
           s.busy = false;
           if (s.pending) {
