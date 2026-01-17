@@ -1,257 +1,532 @@
-import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
+    const pdfjsLib = window.pdfjsLib;
+    const pdfjsViewer = window.pdfjsViewer;
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@2.16.105/build/pdf.worker.min.js";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+    (function () {
+      const els = {
+        fileLeft: document.getElementById("fileLeft"),
+        fileRight: document.getElementById("fileRight"),
 
-(() => {
-  const els = {
-    fileLeft: document.getElementById("fileLeft"),
-    fileRight: document.getElementById("fileRight"),
+        leftA: document.getElementById("leftCanvasA"),
+        leftB: document.getElementById("leftCanvasB"),
+        rightA: document.getElementById("rightCanvasA"),
+        rightB: document.getElementById("rightCanvasB"),
 
-    leftCanvas: document.getElementById("leftCanvas"),
-    rightCanvas: document.getElementById("rightCanvas"),
+        leftStack: document.getElementById("leftStack"),
+        rightStack: document.getElementById("rightStack"),
 
-    leftViewer: document.getElementById("leftViewer"),
-    rightViewer: document.getElementById("rightViewer"),
+        leftTextLayer: document.getElementById("leftTextLayer"),
+        rightTextLayer: document.getElementById("rightTextLayer"),
 
-    leftStatus: document.getElementById("leftStatus"),
-    rightStatus: document.getElementById("rightStatus"),
+        leftViewer: document.getElementById("leftViewer"),
+        rightViewer: document.getElementById("rightViewer"),
 
-    prevBtn: document.getElementById("prevBtn"),
-    nextBtn: document.getElementById("nextBtn"),
-    pageInput: document.getElementById("pageInput"),
-    pageCount: document.getElementById("pageCount"),
+        leftStatus: document.getElementById("leftStatus"),
+        rightStatus: document.getElementById("rightStatus"),
 
-    zoomOutBtn: document.getElementById("zoomOutBtn"),
-    zoomInBtn: document.getElementById("zoomInBtn"),
-    zoomLabel: document.getElementById("zoomLabel"),
+        prevBtn: document.getElementById("prevBtn"),
+        nextBtn: document.getElementById("nextBtn"),
+        pagerSync: document.getElementById("pagerSync"),
+        pagerDual: document.getElementById("pagerDual"),
+        pageInput: document.getElementById("pageInput"),
+        pageCount: document.getElementById("pageCount"),
+        pageLeftInput: document.getElementById("pageLeftInput"),
+        pageRightInput: document.getElementById("pageRightInput"),
+        pageLeftCount: document.getElementById("pageLeftCount"),
+        pageRightCount: document.getElementById("pageRightCount"),
 
-    syncToggle: document.getElementById("syncToggle"),
-  };
+        zoomOutBtn: document.getElementById("zoomOutBtn"),
+        zoomInBtn: document.getElementById("zoomInBtn"),
+        zoomLabel: document.getElementById("zoomLabel"),
 
-  const state = {
-    left: { pdf: null, pages: 0, rendering: false, pending: null },
-    right:{ pdf: null, pages: 0, rendering: false, pending: null },
-    page: 1,
-    zoom: 1.0,
-    activeSide: "left",
-  };
+        syncToggle: document.getElementById("syncToggle"),
+        fitToggle: document.getElementById("fitToggle"),
 
-  const DPR = () => Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+        footerHint: document.getElementById("footerHint"),
+      };
 
-  function bothLoaded() {
-    return !!(state.left.pdf && state.right.pdf);
-  }
+      const state = {
+        left: { pdf: null, pages: 0, busy: false, pending: null, front: "A" },
+        right:{ pdf: null, pages: 0, busy: false, pending: null, front: "A" },
+        page: 1,
+        leftPage: 1,
+        rightPage: 1,
+        zoom: 1.0,
+        activeSide: "left",
+        wheel: {
+          // accumulate "lines" (not pixels) so small trackpad deltas still flip pages quickly
+          accumLines: 0,
+          lastTs: 0,
+          // tune these:
+          thresholdLines: 6,      // lower = more sensitive
+          maxPagesPerGesture: 3,  // prevent huge jumps on fast wheels
+          idleResetMs: 180
+        }
+      };
 
-  function anyLoaded() {
-    return !!(state.left.pdf || state.right.pdf);
-  }
+      const DPR = () => Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      function bothLoaded() { return !!(state.left.pdf && state.right.pdf); }
+      function anyLoaded()  { return !!(state.left.pdf || state.right.pdf); }
 
-  function maxCommonPages() {
-    if (!state.left.pdf && !state.right.pdf) return 0;
-    if (state.left.pdf && state.right.pdf) return Math.min(state.left.pages, state.right.pages);
-    return state.left.pdf ? state.left.pages : state.right.pages;
-  }
-
-  function clampPage(p) {
-    const maxP = maxCommonPages();
-    if (!maxP) return 1;
-    return Math.max(1, Math.min(maxP, p));
-  }
-
-  function setControlsEnabled(enabled) {
-    els.prevBtn.disabled = !enabled;
-    els.nextBtn.disabled = !enabled;
-    els.pageInput.disabled = !enabled;
-    els.zoomOutBtn.disabled = !enabled;
-    els.zoomInBtn.disabled = !enabled;
-  }
-
-  function updatePagerUI() {
-    const maxP = maxCommonPages();
-    els.pageCount.textContent = maxP ? String(maxP) : "—";
-    els.pageInput.value = String(state.page);
-    els.prevBtn.disabled = !anyLoaded() || state.page <= 1;
-    els.nextBtn.disabled = !anyLoaded() || (maxP ? state.page >= maxP : true);
-    els.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
-  }
-
-  function status(side, text) {
-    (side === "left" ? els.leftStatus : els.rightStatus).textContent = text;
-  }
-
-  async function loadPdfFromFile(file) {
-    const buf = await file.arrayBuffer();
-    const task = pdfjsLib.getDocument({ data: buf });
-    return await task.promise;
-  }
-
-  function normalizeCanvas(canvas, viewport) {
-    const dpr = DPR();
-    canvas.width = Math.floor(viewport.width * dpr);
-    canvas.height = Math.floor(viewport.height * dpr);
-    canvas.style.width = `${viewport.width}px`;
-    canvas.style.height = `${viewport.height}px`;
-    const ctx = canvas.getContext("2d", { alpha: false });
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return ctx;
-  }
-
-  async function renderSide(side, pageNum, zoom) {
-    const s = state[side];
-    const canvas = side === "left" ? els.leftCanvas : els.rightCanvas;
-    if (!s.pdf) return;
-
-    if (s.rendering) {
-      s.pending = { pageNum, zoom };
-      return;
-    }
-
-    s.rendering = true;
-    try {
-      const page = await s.pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: zoom });
-      const ctx = normalizeCanvas(canvas, viewport);
-      await page.render({ canvasContext: ctx, viewport }).promise;
-    } finally {
-      s.rendering = false;
-      if (s.pending) {
-        const { pageNum: p, zoom: z } = s.pending;
-        s.pending = null;
-        renderSide(side, p, z);
+      function maxCommonPages() {
+        if (!state.left.pdf && !state.right.pdf) return 0;
+        if (state.left.pdf && state.right.pdf) return Math.min(state.left.pages, state.right.pages);
+        return state.left.pdf ? state.left.pages : state.right.pages;
       }
-    }
-  }
 
-  async function renderAll() {
-    const p = state.page;
-    const z = state.zoom;
-    await Promise.allSettled([
-      state.left.pdf ? renderSide("left", p, z) : Promise.resolve(),
-      state.right.pdf ? renderSide("right", p, z) : Promise.resolve(),
-    ]);
-  }
+      function clampCommonPage(p) {
+        const maxP = maxCommonPages();
+        if (!maxP) return 1;
+        return Math.max(1, Math.min(maxP, p));
+      }
 
-  function setPage(newPage) {
-    state.page = clampPage(newPage);
-    updatePagerUI();
-    renderAll();
-  }
+      function maxSidePages(side) {
+        const s = state[side];
+        return s && s.pdf ? s.pages : 0;
+      }
 
-  function setZoom(newZoom) {
-    state.zoom = Math.max(0.25, Math.min(4.0, newZoom));
-    updatePagerUI();
-    renderAll();
-  }
+      function clampSidePage(side, p) {
+        const maxP = maxSidePages(side);
+        if (!maxP) return 1;
+        return Math.max(1, Math.min(maxP, p));
+      }
 
-  async function onPick(side, file) {
-    if (!file) return;
-    status(side, "Loading…");
+      function getSidePage(side) {
+        return side === "left" ? state.leftPage : state.rightPage;
+      }
 
-    try {
-      const pdf = await loadPdfFromFile(file);
-      state[side].pdf = pdf;
-      state[side].pages = pdf.numPages;
-      status(side, `${file.name} • ${pdf.numPages} pages`);
-    } catch (e) {
-      console.error(e);
-      state[side].pdf = null;
-      state[side].pages = 0;
-      status(side, "Failed to load PDF");
-    }
+      function setActiveSide(side) {
+        state.activeSide = side;
+      }
 
-    setControlsEnabled(anyLoaded());
-    state.page = clampPage(state.page);
-    updatePagerUI();
-    renderAll();
-  }
+      function setControlsEnabled(enabled) {
+        els.prevBtn.disabled = !enabled;
+        els.nextBtn.disabled = !enabled;
+        els.pageInput.disabled = !enabled;
+        els.pageLeftInput.disabled = !enabled;
+        els.pageRightInput.disabled = !enabled;
+        const zoomEnabled = enabled && !els.fitToggle.checked;
+        els.zoomOutBtn.disabled = !zoomEnabled;
+        els.zoomInBtn.disabled = !zoomEnabled;
+      }
 
-  // Wheel paging
-  async function wheelIndependent(side, ev) {
-    if (!anyLoaded()) return;
-    if (ev.ctrlKey || ev.metaKey) return;
+      function updatePagerUI() {
+        const syncOn = els.syncToggle.checked;
 
-    const dy = ev.deltaY;
-    if (Math.abs(dy) < 20) return;
-    ev.preventDefault();
-    const dir = dy > 0 ? 1 : -1;
+        els.pagerSync.hidden = !syncOn;
+        els.pagerDual.hidden = syncOn;
 
-    if (els.syncToggle.checked) {
-      setPage(state.page + dir);
-      return;
-    }
+        if (syncOn) {
+          const maxP = maxCommonPages();
+          els.pageCount.textContent = maxP ? String(maxP) : "—";
+          els.pageInput.value = String(state.page);
+          els.prevBtn.disabled = !anyLoaded() || state.page <= 1;
+          els.nextBtn.disabled = !anyLoaded() || (maxP ? state.page >= maxP : true);
+        } else {
+          const lMax = maxSidePages("left");
+          const rMax = maxSidePages("right");
+          els.pageLeftCount.textContent = lMax ? String(lMax) : "—";
+          els.pageRightCount.textContent = rMax ? String(rMax) : "—";
+          els.pageLeftInput.value = String(state.leftPage);
+          els.pageRightInput.value = String(state.rightPage);
 
-    const s = state[side];
-    if (!s.pdf) return;
+          const side = state.activeSide || "left";
+          const p = getSidePage(side);
+          const maxP = maxSidePages(side);
+          els.prevBtn.disabled = !anyLoaded() || p <= 1;
+          els.nextBtn.disabled = !anyLoaded() || (maxP ? p >= maxP : true);
+        }
 
-    const next = Math.max(1, Math.min(s.pages, state.page + dir));
-    state.page = next;
-    updatePagerUI();
-    await renderSide(side, next, state.zoom);
-  }
+        els.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+      }
 
-  function setActiveSide(side) {
-    state.activeSide = side;
-  }
+      function status(side, text) {
+        (side === "left" ? els.leftStatus : els.rightStatus).textContent = text;
+      }
 
-  async function pageByKeyboard(delta) {
-    if (els.syncToggle.checked) {
-      setPage(state.page + delta);
-      return;
-    }
+      function updateFooterHint() {
+        if (!els.footerHint) return;
 
-    const side = state.activeSide || "left";
-    const s = state[side];
-    if (!s || !s.pdf) return;
+        const hintEl = els.footerHint;
+        hintEl.classList.remove("hint--warn");
 
-    const next = Math.max(1, Math.min(s.pages, state.page + delta));
-    state.page = next;
-    updatePagerUI();
-    await renderSide(side, next, state.zoom);
-  }
+        if (!anyLoaded()) {
+          hintEl.textContent = "Load two PDFs to start. Use Arrow keys / mouse wheel to change pages.";
+          return;
+        }
 
-  // Events
-  els.fileLeft.addEventListener("change", (e) => onPick("left", e.target.files?.[0]));
-  els.fileRight.addEventListener("change", (e) => onPick("right", e.target.files?.[0]));
+        if (state.left.pdf && !state.right.pdf) {
+          hintEl.textContent = "Left PDF loaded — load a right PDF to compare and sync.";
+          return;
+        }
 
-  els.prevBtn.addEventListener("click", () => setPage(state.page - 1));
-  els.nextBtn.addEventListener("click", () => setPage(state.page + 1));
+        if (!state.left.pdf && state.right.pdf) {
+          hintEl.textContent = "Right PDF loaded — load a left PDF to compare and sync.";
+          return;
+        }
 
-  els.pageInput.addEventListener("change", () => setPage(parseInt(els.pageInput.value || "1", 10)));
-  els.pageInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") setPage(parseInt(els.pageInput.value || "1", 10));
-  });
+        // Both loaded
+        if (state.left.pages !== state.right.pages) {
+          hintEl.classList.add("hint--warn");
+          const minP = Math.min(state.left.pages, state.right.pages);
+          hintEl.textContent = `Warning: PDFs have different page counts (Left: ${state.left.pages}, Right: ${state.right.pages}). Sync mode is limited to ${minP} pages.`;
+          return;
+        }
 
-  els.zoomOutBtn.addEventListener("click", () => setZoom(state.zoom / 1.1));
-  els.zoomInBtn.addEventListener("click", () => setZoom(state.zoom * 1.1));
+        hintEl.textContent = `PDFs match (${state.left.pages} pages). Tip: Toggle Sync to move together.`;
+      }
 
-  els.leftViewer.addEventListener("wheel", (ev) => wheelIndependent("left", ev), { passive: false });
-  els.rightViewer.addEventListener("wheel", (ev) => wheelIndependent("right", ev), { passive: false });
+      async function loadPdfFromFile(file) {
+        const buf = await file.arrayBuffer();
+        const task = pdfjsLib.getDocument({ data: buf });
+        return await task.promise;
+      }
 
-  ["pointerdown", "mouseenter", "focusin"].forEach((evt) => {
-    els.leftViewer.addEventListener(evt, () => setActiveSide("left"));
-    els.rightViewer.addEventListener(evt, () => setActiveSide("right"));
-  });
+      function setCanvasSize(canvas, viewport) {
+        const dpr = DPR();
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        const ctx = canvas.getContext("2d", { alpha: false });
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return ctx;
+      }
 
-  window.addEventListener("keydown", (e) => {
-    if (!anyLoaded()) return;
+      function getCanvases(side) {
+        if (side === "left") return { A: els.leftA, B: els.leftB, stack: els.leftStack, viewer: els.leftViewer };
+        return { A: els.rightA, B: els.rightB, stack: els.rightStack, viewer: els.rightViewer };
+      }
 
-    if (e.key === "ArrowLeft") { e.preventDefault(); pageByKeyboard(-1); }
-    if (e.key === "ArrowRight") { e.preventDefault(); pageByKeyboard(1); }
+      function getTextLayer(side) {
+        return side === "left" ? els.leftTextLayer : els.rightTextLayer;
+      }
 
-    const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); setZoom(state.zoom * 1.1); }
-    if (ctrl && (e.key === "-" || e.key === "_")) { e.preventDefault(); setZoom(state.zoom / 1.1); }
-    if (ctrl && (e.key === "0")) { e.preventDefault(); setZoom(1.0); }
-  });
+      async function renderTextLayer(side, page, viewport) {
+        const layer = getTextLayer(side);
+        if (!layer) return;
 
-  els.syncToggle.addEventListener("change", () => {
-    if (els.syncToggle.checked && bothLoaded()) state.page = clampPage(state.page);
-    updatePagerUI();
-    renderAll();
-  });
+        // Size and position must match the canvas CSS size.
+        layer.style.width = `${viewport.width}px`;
+        layer.style.height = `${viewport.height}px`;
 
-  // Initial UI
-  setControlsEnabled(false);
-  updatePagerUI();
-})();
+        // Clear previous content (previous page).
+        layer.textContent = "";
+
+        // PDF.js provides a text layer renderer either on pdfjsLib (core) or pdfjsViewer (viewer bundle).
+        const textContent = await page.getTextContent();
+        const textDivs = [];
+        const renderFn = (pdfjsLib && typeof pdfjsLib.renderTextLayer === "function")
+          ? pdfjsLib.renderTextLayer
+          : (pdfjsViewer && typeof pdfjsViewer.renderTextLayer === "function")
+            ? pdfjsViewer.renderTextLayer
+            : null;
+
+        if (!renderFn) {
+          throw new Error("PDF.js text layer renderer not available");
+        }
+
+        const task = renderFn({
+          textContent,
+          container: layer,
+          viewport,
+          textDivs,
+          enhanceTextSelection: true,
+        });
+
+        // pdfjs versions differ: sometimes renderTextLayer returns a renderTask with .promise
+        // and sometimes a Promise directly.
+        if (task && task.promise) await task.promise;
+        else await task;
+      }
+
+      function setFront(side, which) {
+        const { A, B } = getCanvases(side);
+        if (which === "A") {
+          A.classList.add("isFront"); A.classList.remove("isBack");
+          B.classList.add("isBack");  B.classList.remove("isFront");
+        } else {
+          B.classList.add("isFront"); B.classList.remove("isBack");
+          A.classList.add("isBack");  A.classList.remove("isFront");
+        }
+        state[side].front = which;
+      }
+
+      function backCanvas(side) {
+        const { A, B } = getCanvases(side);
+        return state[side].front === "A" ? B : A;
+      }
+
+      function computeFitScale(pageViewportAt1, viewerEl, stackEl) {
+        const availW = Math.max(1, viewerEl.clientWidth);
+        const availH = Math.max(1, viewerEl.clientHeight);
+        const scale = Math.min(availW / pageViewportAt1.width, availH / pageViewportAt1.height);
+        const renderedH = pageViewportAt1.height * scale;
+        stackEl.style.minHeight = `${Math.ceil(renderedH)}px`;
+        return scale;
+      }
+
+      async function renderSide(side, pageNum) {
+        const s = state[side];
+        if (!s.pdf) return;
+
+        if (s.busy) { s.pending = { pageNum }; return; }
+        s.busy = true;
+
+        try {
+          const page = await s.pdf.getPage(pageNum);
+
+          let scale;
+          if (els.fitToggle.checked) {
+            const vp1 = page.getViewport({ scale: 1 });
+            const { viewer, stack } = getCanvases(side);
+            scale = computeFitScale(vp1, viewer, stack);
+          } else {
+            scale = state.zoom;
+          }
+
+          const viewport = page.getViewport({ scale });
+          const back = backCanvas(side);
+          const ctx = setCanvasSize(back, viewport);
+
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          getCanvases(side).stack.classList.add("hasRendered");
+          const nextFront = (s.front === "A") ? "B" : "A";
+          requestAnimationFrame(async () => {
+            setFront(side, nextFront);
+            try {
+              await renderTextLayer(side, page, viewport);
+            } catch (e) {
+              // If the text layer fails (e.g., scanned PDFs or unexpected API),
+              // keep the canvas render working.
+              console.warn("Text layer render failed:", e);
+              const layer = getTextLayer(side);
+              if (layer) layer.textContent = "";
+            }
+          });
+        } finally {
+          s.busy = false;
+          if (s.pending) {
+            const { pageNum: p } = s.pending;
+            s.pending = null;
+            renderSide(side, p);
+          }
+        }
+      }
+
+      async function renderAll() {
+        const syncOn = els.syncToggle.checked;
+        const lPage = syncOn ? state.page : state.leftPage;
+        const rPage = syncOn ? state.page : state.rightPage;
+        await Promise.allSettled([
+          state.left.pdf ? renderSide("left", lPage) : Promise.resolve(),
+          state.right.pdf ? renderSide("right", rPage) : Promise.resolve(),
+        ]);
+      }
+
+      function setSyncPage(newPage) {
+        state.page = clampCommonPage(newPage);
+        state.leftPage = state.page;
+        state.rightPage = state.page;
+        updatePagerUI();
+        renderAll();
+      }
+
+      async function setSidePage(side, newPage) {
+        const next = clampSidePage(side, newPage);
+        if (side === "left") state.leftPage = next;
+        else state.rightPage = next;
+        updatePagerUI();
+        await renderSide(side, next);
+      }
+
+      function pageByDelta(delta) {
+        if (els.syncToggle.checked) {
+          setSyncPage(state.page + delta);
+          return;
+        }
+
+        const side = state.activeSide || "left";
+        setSidePage(side, getSidePage(side) + delta);
+      }
+
+      function setZoom(newZoom) {
+        state.zoom = Math.max(0.25, Math.min(4.0, newZoom));
+        updatePagerUI();
+        renderAll();
+      }
+
+      async function onPick(side, file) {
+        if (!file) return;
+        status(side, "Loading…");
+
+        try {
+          const pdf = await loadPdfFromFile(file);
+          state[side].pdf = pdf;
+          state[side].pages = pdf.numPages;
+          status(side, `${file.name} • ${pdf.numPages} pages`);
+          setFront(side, state[side].front);
+        } catch (e) {
+          console.error(e);
+          state[side].pdf = null;
+          state[side].pages = 0;
+          status(side, "Failed to load PDF");
+        }
+
+        setControlsEnabled(anyLoaded());
+
+        if (els.syncToggle.checked) {
+          state.page = clampCommonPage(state.page);
+          state.leftPage = state.page;
+          state.rightPage = state.page;
+        } else {
+          state.leftPage = clampSidePage("left", state.leftPage);
+          state.rightPage = clampSidePage("right", state.rightPage);
+        }
+
+        updatePagerUI();
+        updateFooterHint();
+        renderAll();
+      }
+
+      // --- Better wheel paging (sensitive + trackpad-friendly) ---
+      function deltaToLines(ev) {
+        // Normalize wheel delta to "line units"
+        // deltaMode: 0=pixels, 1=lines, 2=pages
+        if (ev.deltaMode === 1) return ev.deltaY;
+        if (ev.deltaMode === 2) return ev.deltaY * 30; // treat a "page" as ~30 lines
+        // pixels -> lines approximation (16px per line)
+        return ev.deltaY / 12;
+      }
+
+      function wheelToPages(ev) {
+        const now = performance.now();
+        if (now - state.wheel.lastTs > state.wheel.idleResetMs) state.wheel.accumLines = 0;
+        state.wheel.lastTs = now;
+
+        const lines = deltaToLines(ev);
+        state.wheel.accumLines += lines;
+
+        const thr = state.wheel.thresholdLines;
+        let steps = 0;
+
+        // Consume multiple thresholds if user scrolls quickly
+        while (Math.abs(state.wheel.accumLines) >= thr) {
+          steps += state.wheel.accumLines > 0 ? 1 : -1;
+          state.wheel.accumLines += state.wheel.accumLines > 0 ? -thr : thr;
+          if (Math.abs(steps) >= state.wheel.maxPagesPerGesture) break;
+        }
+
+        return steps; // positive => next page, negative => prev page
+      }
+
+      async function wheelIndependent(side, ev) {
+        if (!anyLoaded()) return;
+        if (ev.ctrlKey || ev.metaKey) return;
+
+        const steps = wheelToPages(ev);
+        if (steps === 0) return;
+
+        ev.preventDefault();
+
+        setActiveSide(side);
+
+        if (els.syncToggle.checked) {
+          setSyncPage(state.page + steps);
+          return;
+        }
+
+        const s = state[side];
+        if (!s.pdf) return;
+
+        const next = clampSidePage(side, getSidePage(side) + steps);
+        if (side === "left") state.leftPage = next;
+        else state.rightPage = next;
+        updatePagerUI();
+        await renderSide(side, next);
+      }
+
+      // Events
+      els.fileLeft.addEventListener("change", (e) => onPick("left", e.target.files && e.target.files[0]));
+      els.fileRight.addEventListener("change", (e) => onPick("right", e.target.files && e.target.files[0]));
+
+      els.prevBtn.addEventListener("click", () => pageByDelta(-1));
+      els.nextBtn.addEventListener("click", () => pageByDelta(1));
+
+      els.pageInput.addEventListener("change", () => setSyncPage(parseInt(els.pageInput.value || "1", 10)));
+      els.pageInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") setSyncPage(parseInt(els.pageInput.value || "1", 10));
+      });
+
+      els.pageLeftInput.addEventListener("change", () => setSidePage("left", parseInt(els.pageLeftInput.value || "1", 10)));
+      els.pageLeftInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") setSidePage("left", parseInt(els.pageLeftInput.value || "1", 10));
+      });
+
+      els.pageRightInput.addEventListener("change", () => setSidePage("right", parseInt(els.pageRightInput.value || "1", 10)));
+      els.pageRightInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") setSidePage("right", parseInt(els.pageRightInput.value || "1", 10));
+      });
+
+      els.zoomOutBtn.addEventListener("click", () => setZoom(state.zoom / 1.1));
+      els.zoomInBtn.addEventListener("click", () => setZoom(state.zoom * 1.1));
+
+      els.leftViewer.addEventListener("wheel", (ev) => wheelIndependent("left", ev), { passive: false });
+      els.rightViewer.addEventListener("wheel", (ev) => wheelIndependent("right", ev), { passive: false });
+
+      // Track which panel the user is interacting with for unsynced keyboard paging
+      ["pointerdown", "mouseenter", "focusin"].forEach((evt) => {
+        els.leftViewer.addEventListener(evt, () => setActiveSide("left"));
+        els.rightViewer.addEventListener(evt, () => setActiveSide("right"));
+      });
+
+      els.pageLeftInput.addEventListener("focus", () => setActiveSide("left"));
+      els.pageRightInput.addEventListener("focus", () => setActiveSide("right"));
+
+      window.addEventListener("keydown", (e) => {
+        if (!anyLoaded()) return;
+
+        if (e.key === "ArrowLeft") { e.preventDefault(); pageByDelta(-1); }
+        if (e.key === "ArrowRight") { e.preventDefault(); pageByDelta(1); }
+
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (!els.fitToggle.checked) {
+          if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); setZoom(state.zoom * 1.1); }
+          if (ctrl && (e.key === "-" || e.key === "_")) { e.preventDefault(); setZoom(state.zoom / 1.1); }
+          if (ctrl && (e.key === "0")) { e.preventDefault(); setZoom(1.0); }
+        }
+      });
+
+      els.syncToggle.addEventListener("change", () => {
+        if (els.syncToggle.checked) {
+          // Choose the active side's current page as the sync target.
+          const target = clampCommonPage(getSidePage(state.activeSide || "left"));
+          state.page = target;
+          state.leftPage = target;
+          state.rightPage = target;
+        }
+        updatePagerUI();
+        updateFooterHint();
+        renderAll();
+      });
+
+      els.fitToggle.addEventListener("change", () => {
+        setControlsEnabled(anyLoaded());
+        renderAll();
+      });
+
+      let resizeTimer = null;
+      window.addEventListener("resize", () => {
+        if (!els.fitToggle.checked) return;
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => renderAll(), 80);
+      });
+
+      setFront("left", "A");
+      setFront("right", "A");
+      setControlsEnabled(false);
+      updatePagerUI();
+      updateFooterHint();
+    })();

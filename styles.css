@@ -265,3 +265,19 @@ body{
   color: var(--muted);
   font-size: 12px;
 }
+
+.hint{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: rgba(255,255,255,.04);
+}
+
+.hint.hint--warn{
+  color: #ffe2a8;
+  border-color: rgba(255, 210, 122, .35);
+  background: rgba(255, 210, 122, .10);
+}
