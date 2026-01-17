@@ -362,12 +362,15 @@
         if (!file) return;
         status(side, "Loading…");
 
+        let loadedOk = false;
+
         try {
           const pdf = await loadPdfFromFile(file);
           state[side].pdf = pdf;
           state[side].pages = pdf.numPages;
           status(side, `${file.name} • ${pdf.numPages} pages`);
           setFront(side, state[side].front);
+          loadedOk = true;
         } catch (e) {
           console.error(e);
           state[side].pdf = null;
@@ -376,6 +379,19 @@
         }
 
         setControlsEnabled(anyLoaded());
+
+        // When a new PDF is loaded, jump back to the first page.
+        if (loadedOk) {
+          if (els.syncToggle.checked) {
+            state.page = 1;
+            state.leftPage = 1;
+            state.rightPage = 1;
+          } else {
+            setActiveSide(side);
+            if (side === "left") state.leftPage = 1;
+            else state.rightPage = 1;
+          }
+        }
 
         if (els.syncToggle.checked) {
           state.page = clampCommonPage(state.page);
